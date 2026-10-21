@@ -72,6 +72,16 @@
   .hint { font-size: .8rem; color: var(--muted); margin: -12px 0 20px; }
 
   .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  .shade { margin-bottom: 16px; font-size: .9rem; }
+  .shade[hidden] { display: none; }
+  .shade select {
+    margin-left: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: inherit;
+    background: #fff;
+  }
   #name {
     flex: 1;
     min-width: 200px;
@@ -111,6 +121,14 @@
       <input type="range" id="zoom" min="0" max="1000" value="0">
     </div>
     <p class="hint">Bild ziehen zum Verschieben, Mausrad oder Regler zum Zoomen.</p>
+    <div class="row shade" id="shadeRow">
+      <label>Abdunkeln für weiße Überschrift
+        <select id="shade">
+          <option value="ja">Ja</option>
+          <option value="nein">Nein</option>
+        </select>
+      </label>
+    </div>
     <div class="row">
       <input type="text" id="name" placeholder="Dateiname">
       <button id="download">Download .jpg</button>
@@ -132,6 +150,12 @@ const stage = document.getElementById('stage');
 const ctx = stage.getContext('2d');
 const zoomInput = document.getElementById('zoom');
 const nameInput = document.getElementById('name');
+const shadeRow = document.getElementById('shadeRow');
+const shadeSelect = document.getElementById('shade');
+
+// Abdunkelung (nur Banner), damit weiße Schrift lesbar bleibt
+const SHADE = 0.3;
+const shadeActive = () => format === FORMATS.banner && shadeSelect.value === 'ja';
 
 let img = null;
 let format = FORMATS.banner;
@@ -193,6 +217,10 @@ function draw() {
   ctx.fillStyle = '#fff';
   ctx.fillRect(f.x, f.y, f.w, f.h);
   ctx.drawImage(img, f.x + x * f.k, f.y + y * f.k, img.width * scale * f.k, img.height * scale * f.k);
+  if (shadeActive()) {
+    ctx.fillStyle = `rgba(0,0,0,${SHADE})`;
+    ctx.fillRect(f.x, f.y, f.w, f.h);
+  }
   // Bereich außerhalb des Rahmens abdunkeln
   ctx.fillStyle = 'rgba(245,245,244,0.75)';
   ctx.beginPath();
@@ -234,8 +262,10 @@ drop.addEventListener('drop', e => {
 // Format
 document.querySelectorAll('input[name=format]').forEach(r => r.addEventListener('change', () => {
   format = FORMATS[r.value];
+  shadeRow.hidden = format !== FORMATS.banner;
   if (img) { layout(); fit(); draw(); }
 }));
+shadeSelect.addEventListener('change', draw);
 
 // Verschieben
 let drag = null;
@@ -282,6 +312,10 @@ document.getElementById('download').addEventListener('click', () => {
   o.fillStyle = '#fff';
   o.fillRect(0, 0, out.width, out.height);
   o.drawImage(img, x, y, img.width * scale, img.height * scale);
+  if (shadeActive()) {
+    o.fillStyle = `rgba(0,0,0,${SHADE})`;
+    o.fillRect(0, 0, out.width, out.height);
+  }
   const name = (nameInput.value.trim() || 'bild').replace(/[\\/:*?"<>|]+/g, '-');
   out.toBlob(blob => {
     const a = document.createElement('a');
