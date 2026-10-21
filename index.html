@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bildanpassung</title>
+<style>
+  :root {
+    --bg: #f5f5f4;
+    --fg: #1c1917;
+    --muted: #78716c;
+    --line: #d6d3d1;
+    --accent: #1c1917;
+    --accent-fg: #fff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  main {
+    max-width: 960px;
+    margin: 0 auto;
+    padding: 24px 16px 48px;
+  }
+  h1 { font-size: 1.25rem; font-weight: 600; margin: 0 0 20px; }
+  .formats { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .formats label {
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    padding: 8px 12px;
+    cursor: pointer;
+    background: #fff;
+    font-size: .9rem;
+  }
+  .formats input { margin-right: 6px; }
+  .formats small { color: var(--muted); margin-left: 4px; }
+
+  #drop {
+    border: 2px dashed var(--line);
+    border-radius: 8px;
+    padding: 64px 16px;
+    text-align: center;
+    color: var(--muted);
+    cursor: pointer;
+    background: #fff;
+  }
+  #drop.over { border-color: var(--fg); color: var(--fg); }
+  #file { display: none; }
+
+  #editor { display: none; }
+  #stage {
+    width: 100%;
+    display: block;
+    background: #e7e5e4;
+    border-radius: 8px;
+    cursor: grab;
+    touch-action: none;
+  }
+  #stage.dragging { cursor: grabbing; }
+  .zoom {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin: 12px 0 20px;
+    font-size: .9rem;
+    color: var(--muted);
+  }
+  .zoom input { flex: 1; }
+  .hint { font-size: .8rem; color: var(--muted); margin: -12px 0 20px; }
+
+  .row { display: flex; gap: 8px; flex-wrap: wrap; }
+  #name {
+    flex: 1;
+    min-width: 200px;
+    padding: 10px 12px;
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    font: inherit;
+  }
+  button {
+    font: inherit;
+    padding: 10px 16px;
+    border-radius: 6px;
+    border: 1px solid var(--accent);
+    background: var(--accent);
+    color: var(--accent-fg);
+    cursor: pointer;
+  }
+  button.secondary { background: #fff; color: var(--fg); border-color: var(--line); }
+</style>
+</head>
+<body>
+<main>
+  <h1>Bildanpassung</h1>
+
+  <div class="formats">
+    <label><input type="radio" name="format" value="banner" checked>Banner<small>3000 × 1500</small></label>
+    <label><input type="radio" name="format" value="beitrag">Beitragsbild<small>2048 × 1536</small></label>
+  </div>
+
+  <div id="drop">Bild hierher ziehen oder klicken zum Auswählen</div>
+  <input type="file" id="file" accept="image/*">
+
+  <div id="editor">
+    <canvas id="stage"></canvas>
+    <div class="zoom">
+      <span>Zoom</span>
+      <input type="range" id="zoom" min="0" max="1000" value="0">
+    </div>
+    <p class="hint">Bild ziehen zum Verschieben, Mausrad oder Regler zum Zoomen.</p>
+    <div class="row">
+      <input type="text" id="name" placeholder="Dateiname">
+      <button id="download">Download .jpg</button>
+      <button id="reset" class="secondary">Neues Bild</button>
+    </div>
+  </div>
+</main>
+
+<script>
+const FORMATS = {
+  banner:  { w: 3000, h: 1500 },
+  beitrag: { w: 2048, h: 1536 }
+};
+
+const drop = document.getElementById('drop');
+const fileInput = document.getElementById('file');
+const editor = document.getElementById('editor');
+const stage = document.getElementById('stage');
+const ctx = stage.getContext('2d');
+const zoomInput = document.getElementById('zoom');
+const nameInput = document.getElementById('name');
+
+let img = null;
+let format = FORMATS.banner;
+// Bildposition und -skalierung in Ausgabepixeln (relativ zum Rahmen)
+let scale = 1, x = 0, y = 0;
+let minScale = 1, maxScale = 1;
+// Darstellung: Rahmen innerhalb der Bühne
+let frame = { x: 0, y: 0, w: 0, h: 0, k: 1 };
+
+const MARGIN = 0.12; // sichtbarer Bereich um den Rahmen herum
+
+function layout() {
+  const dpr = window.devicePixelRatio || 1;
+  const cssW = stage.clientWidth;
+  const frameW = cssW * (1 - 2 * MARGIN);
+  const frameH = frameW * format.h / format.w;
+  const cssH = frameH + cssW * MARGIN * 2;
+  stage.style.height = cssH + 'px';
+  stage.width = Math.round(cssW * dpr);
+  stage.height = Math.round(cssH * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  frame = { x: cssW * MARGIN, y: cssW * MARGIN, w: frameW, h: frameH, k: frameW / format.w };
+  draw();
+}
+
+function fit() {
+  const cover = Math.max(format.w / img.width, format.h / img.height);
+  const contain = Math.min(format.w / img.width, format.h / img.height);
+  minScale = contain;
+  maxScale = cover * 6;
+  scale = cover;
+  x = (format.w - img.width * scale) / 2;
+  y = (format.h - img.height * scale) / 2;
+  syncSlider();
+}
+
+// Regler logarithmisch, damit sich der Zoom gleichmäßig anfühlt
+function syncSlider() {
+  const t = Math.log(scale / minScale) / Math.log(maxScale / minScale);
+  zoomInput.value = Math.round((isFinite(t) ? t : 0) * 1000);
+}
+
+function zoomTo(newScale, cx, cy) {
+  newScale = Math.min(maxScale, Math.max(minScale, newScale));
+  // Punkt (cx, cy) in Ausgabekoordinaten bleibt fest
+  x = cx - (cx - x) * newScale / scale;
+  y = cy - (cy - y) * newScale / scale;
+  scale = newScale;
+  syncSlider();
+  draw();
+}
+
+function draw() {
+  const cssW = stage.clientWidth, cssH = parseFloat(stage.style.height);
+  ctx.clearRect(0, 0, cssW, cssH);
+  if (!img) return;
+  const f = frame;
+  // weißer Hintergrund im Rahmen (falls Bild kleiner als Rahmen)
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(f.x, f.y, f.w, f.h);
+  ctx.drawImage(img, f.x + x * f.k, f.y + y * f.k, img.width * scale * f.k, img.height * scale * f.k);
+  // Bereich außerhalb des Rahmens abdunkeln
+  ctx.fillStyle = 'rgba(245,245,244,0.75)';
+  ctx.beginPath();
+  ctx.rect(0, 0, cssW, cssH);
+  ctx.rect(f.x, f.y, f.w, f.h);
+  ctx.fill('evenodd');
+  ctx.strokeStyle = '#1c1917';
+  ctx.lineWidth = 1;
+  ctx.strokeRect(f.x + .5, f.y + .5, f.w - 1, f.h - 1);
+}
+
+function loadFile(file) {
+  if (!file || !file.type.startsWith('image/')) return;
+  const url = URL.createObjectURL(file);
+  const image = new Image();
+  image.onload = () => {
+    img = image;
+    nameInput.value = file.name.replace(/\.[^.]+$/, '');
+    drop.style.display = 'none';
+    editor.style.display = 'block';
+    layout();
+    fit();
+    draw();
+  };
+  image.src = url;
+}
+
+// Upload
+drop.addEventListener('click', () => fileInput.click());
+fileInput.addEventListener('change', e => loadFile(e.target.files[0]));
+drop.addEventListener('dragover', e => { e.preventDefault(); drop.classList.add('over'); });
+drop.addEventListener('dragleave', () => drop.classList.remove('over'));
+drop.addEventListener('drop', e => {
+  e.preventDefault();
+  drop.classList.remove('over');
+  loadFile(e.dataTransfer.files[0]);
+});
+
+// Format
+document.querySelectorAll('input[name=format]').forEach(r => r.addEventListener('change', () => {
+  format = FORMATS[r.value];
+  if (img) { layout(); fit(); draw(); }
+}));
+
+// Verschieben
+let drag = null;
+stage.addEventListener('pointerdown', e => {
+  drag = { px: e.clientX, py: e.clientY, x, y };
+  stage.setPointerCapture(e.pointerId);
+  stage.classList.add('dragging');
+});
+stage.addEventListener('pointermove', e => {
+  if (!drag) return;
+  x = drag.x + (e.clientX - drag.px) / frame.k;
+  y = drag.y + (e.clientY - drag.py) / frame.k;
+  draw();
+});
+const endDrag = () => { drag = null; stage.classList.remove('dragging'); };
+stage.addEventListener('pointerup', endDrag);
+stage.addEventListener('pointercancel', endDrag);
+
+// Zoom per Mausrad (um Mausposition)
+stage.addEventListener('wheel', e => {
+  e.preventDefault();
+  const r = stage.getBoundingClientRect();
+  const cx = (e.clientX - r.left - frame.x) / frame.k;
+  const cy = (e.clientY - r.top - frame.y) / frame.k;
+  zoomTo(scale * Math.exp(-e.deltaY * 0.0015), cx, cy);
+}, { passive: false });
+
+// Zoom per Regler (um Rahmenmitte)
+zoomInput.addEventListener('input', () => {
+  const t = zoomInput.value / 1000;
+  const s = minScale * Math.pow(maxScale / minScale, t);
+  zoomTo(s, format.w / 2, format.h / 2);
+});
+
+window.addEventListener('resize', () => { if (img) layout(); });
+
+// Download
+document.getElementById('download').addEventListener('click', () => {
+  const out = document.createElement('canvas');
+  out.width = format.w;
+  out.height = format.h;
+  const o = out.getContext('2d');
+  o.imageSmoothingQuality = 'high';
+  o.fillStyle = '#fff';
+  o.fillRect(0, 0, out.width, out.height);
+  o.drawImage(img, x, y, img.width * scale, img.height * scale);
+  const name = (nameInput.value.trim() || 'bild').replace(/[\\/:*?"<>|]+/g, '-');
+  out.toBlob(blob => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = name + '.jpg';
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }, 'image/jpeg', 0.92);
+});
+
+// Neues Bild
+document.getElementById('reset').addEventListener('click', () => {
+  if (img) URL.revokeObjectURL(img.src);
+  img = null;
+  fileInput.value = '';
+  nameInput.value = '';
+  editor.style.display = 'none';
+  drop.style.display = 'block';
+});
+</script>
+</body>
+</html>
